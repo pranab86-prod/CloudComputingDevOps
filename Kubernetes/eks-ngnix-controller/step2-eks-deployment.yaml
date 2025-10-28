@@ -1,0 +1,22 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx-deployment
+  namespace: prod
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: nginx
+  template:
+    metadata:
+      labels:
+        app: nginx
+    spec:
+      containers:
+        - name: nginx
+          image: 590183727102.dkr.ecr.us-west-2.amazonaws.com/prd/tom80
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 80
+

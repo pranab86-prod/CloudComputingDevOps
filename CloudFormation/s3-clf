@@ -1,0 +1,4 @@
+aws cloudformation create-stack \
+  --stack-name my-s3-stack \
+  --template-body file://s3.yml \
+  --parameters ParameterKey=BucketName,ParameterValue=my-unique-bucket-name-12345

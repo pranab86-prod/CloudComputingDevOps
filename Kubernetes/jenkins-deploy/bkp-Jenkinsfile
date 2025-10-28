@@ -1,0 +1,22 @@
+pipeline {
+    agent any
+    environment {
+        AWS_ACCESS_KEY_ID = credentials('AWS_ACCESS_KEY_ID')
+        AWS_SECRET_ACCESS_KEY = credentials('AWS_SECRET_ACCESS_KEY')
+        AWS_DEFAULT_REGION = "eu-west-3"
+    }
+    stages {
+        stage("Deploy to EKS") {
+            steps {
+                script {
+                    dir('kubernetes') {
+                        sh "aws eks describe-cluster --name prodeks --region us-west-2"
+                        sh "aws eks --region us-west-2 update-kubeconfig --name prodeks"
+                        sh "kubectl apply -f ${WORKSPACE}/Kubernetes/jenkins-deploy/nginx-deployment.yaml"
+                        sh "kubectl apply -f ${WORKSPACE}/Kubernetes/jenkins-deploy/nginx-service.yaml"
+                    }
+                }
+            }
+        }
+    }
+}

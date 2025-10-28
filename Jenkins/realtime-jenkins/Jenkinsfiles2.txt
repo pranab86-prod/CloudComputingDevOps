@@ -1,0 +1,244 @@
+node('slave_javamicroservices') {
+    try {
+        def triggeredBy = currentBuild.getBuildCauses('hudson.model.Cause$UserIdCause')[0]
+        def triggeredByUser
+        if (triggeredBy && triggeredBy.userName) {
+            triggeredByUser = triggeredBy.userName
+        } else {
+            triggeredByUser = "Jenkins (Auto)"
+        }
+        timeout(20) {
+            try {
+                stage('Loading Parameters') {
+                    FAILED_STAGE=env.STAGE_NAME
+                    cleanWs()
+                    echo '##################################################'
+                    echo 'Loading Parameters'
+                    echo '##################################################'
+                    
+                    if (!params.DockerImageTag) {
+                        error("DockerImageTag parameter is empty.")
+                    }
+                    env.IMAGE_REPO       = "containers.le.tnt.bank.ikano"
+                    env.NEXUS_URL        = "URL"
+                    env.IMAGE_REPO_NAME  = "docker-snapshots"
+                    env.ACCOUNT_NUMBER   = "${account}"
+                    env.ASSUME_PROFILE   = "${profile}"
+                    env.EKS_CLUSTER_NAME = "${cluster_name}"
+                    env.SQUAD_SHORT_NAME = "${squad_name}"
+                    env.MICROSERVICE     = "${microservice_name}"
+                    env.IMAGE_NAME       = "$IMAGE_REPO/$MICROSERVICE"
+                    env.IMAGE_TAG        = "${DockerImageTag}"
+                    env.DEPLOY_ENV       = "${environment}"
+                    env.DEPLOY_NAMESPACE = "${namespace}"
+                    
+                    echo "${ACCOUNT_NUMBER}"
+                    echo "${ASSUME_PROFILE}"
+                    echo "${EKS_CLUSTER_NAME}"
+                    echo "${SQUAD_SHORT_NAME}"
+                    echo "${IMAGE_NAME}"
+                    echo "${IMAGE_TAG}"
+                    echo "${MICROSERVICE}"
+                    echo "${DEPLOY_ENV}"
+                    echo "${DEPLOY_NAMESPACE}"
+                }
+                
+                stage('Check Image Availability') {
+                    FAILED_STAGE=env.STAGE_NAME
+                    echo '##################################################'
+                    echo 'Check Image Availability'
+                    echo '##################################################'
+                    
+                    withCredentials([usernamePassword(credentialsId: 'nexus-account', usernameVariable: 'nexus', passwordVariable: 'nexus')]) {
+                        sh label: 'Verify Availability', script: '''
+                            result=\$(curl -u \${nexusUser}:\${nexusPass} -X GET "https://\${NEXUS_URL}/service/rest/v1/search/assets?repository=\${IMAGE_REPO_NAME}&name=\${MICROSERVICE}&version=\${IMAGE_TAG}" | jq --raw-output '.items[].id')
+                            if [ \$result ]
+                            then
+                                echo "Image available"
+                            else
+                                echo "Image unavailable"
+                                exit 1
+                            fi
+                        '''
+                    }
+                }
+                
+                stage('GitHub Code CheckOut') {
+                    FAILED_STAGE=env.STAGE_NAME
+                    echo '##################################################'
+                    echo 'Checkout Kube Repo'
+                    echo '##################################################'
+                    
+                    checkout([
+                        $class: 'GitSCM', 
+                        branches: [[name: "*/output_${DEPLOY_ENV}"]], 
+                        extensions: [[$class: 'LocalBranch', localBranch: "**"]], 
+                        userRemoteConfigs: [[credentialsId : 'github-ikano-bank', url: "https://github.com/ikano-bank/${SQUAD_SHORT_NAME}_kuberepo_central"]]
+                    ])
+                }
+                
+                stage('Update Chart') {
+                    FAILED_STAGE=env.STAGE_NAME
+                    echo '##################################################'
+                    echo 'Update Helm Chart'
+                    echo '##################################################'
+                    
+                    env.TRIGGERED_BY = "${triggeredByUser}"
+                    sh label: 'Updating Chart', script: '''
+                        cd ./${MICROSERVICE}
+                        FULL_IMAGE_NAME="${IMAGE_NAME}:${IMAGE_TAG}"
+                        yq -y -i --arg image "$FULL_IMAGE_NAME" '.spec.template.spec.containers[0].image = $image' deployment.yaml
+                        cd ../
+                        mkdir -p _inventory
+                        cd _inventory
+                        if [ ! -f "${SQUAD_SHORT_NAME}.json" ]; then
+                          echo {} > ${SQUAD_SHORT_NAME}.json
+                        fi
+                        TIMESTAMP=$(date +"%m%d%y-%T")
+                        jq --arg squad "${SQUAD_SHORT_NAME}" --arg deploy_env "${DEPLOY_ENV}" --arg cluster "${EKS_CLUSTER_NAME}" --arg microservice "${MICROSERVICE}" --arg image "${IMAGE_NAME}" --arg tag "${IMAGE_TAG}" --arg namespace "${DEPLOY_NAMESPACE}" --arg timestamp "$TIMESTAMP" --arg buildnumber "${BUILD_NUMBER}" --arg triggeredby "${TRIGGERED_BY}" '.[$squad][$deploy_env][$cluster][$microservice] += [{image:$image,tag:$tag,namespace:$namespace,time:$timestamp,buildnumber: $buildnumber,triggeredby: $triggeredby}]' ${SQUAD_SHORT_NAME}.json > temp.json
+                        mv temp.json ${SQUAD_SHORT_NAME}.json
+                        jq --arg squad "${SQUAD_SHORT_NAME}" --arg deploy_env "${DEPLOY_ENV}" --arg cluster "${EKS_CLUSTER_NAME}" --arg microservice "${MICROSERVICE}" '.[$squad][$deploy_env][$cluster][$microservice]' ${SQUAD_SHORT_NAME}.json | jq length > length.txt
+                        array_length=$(cat length.txt)
+                        rm -rf length.txt
+                        if [ $array_length -ge 10 ]
+                        then
+                            jq --arg squad "${SQUAD_SHORT_NAME}" --arg deploy_env "${DEPLOY_ENV}" --arg cluster "${EKS_CLUSTER_NAME}" --arg microservice "${MICROSERVICE}" 'del(.[$squad][$deploy_env][$cluster][$microservice][0])' ${SQUAD_SHORT_NAME}.json > temp.json
+                            mv temp.json ${SQUAD_SHORT_NAME}.json
+                        fi
+                    '''
+                    
+                    sh label: 'Synchronizing History', script: '''
+                        cd ./${MICROSERVICE}
+                        aws s3 cp --include="*.yaml" . s3://ec1-tnt-s3-cd-helm-output/${DEPLOY_ENV}/${SQUAD_SHORT_NAME}/${MICROSERVICE}/ --recursive --profile default
+                        
+                        cd ../_inventory
+                        UTCTIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+                        EPOCHTIMESTAMP=$(date +%s)
+                        UUID=$(openssl rand -hex 12)
+                        echo {} > ${MICROSERVICE}-$EPOCHTIMESTAMP-$UUID.json
+                        jq --compact-output --arg constant_field "deployment" --arg squad "${SQUAD_SHORT_NAME}" --arg deploy_env "${DEPLOY_ENV}" --arg cluster "${EKS_CLUSTER_NAME}" --arg microservice "${MICROSERVICE}" --arg image "${IMAGE_NAME}" --arg tag "${IMAGE_TAG}" --arg namespace "${DEPLOY_NAMESPACE}" --arg timestamp "$UTCTIMESTAMP" --arg buildnumber "${BUILD_NUMBER}" --arg triggeredby "${TRIGGERED_BY}" '.[$constant_field] += {applicationName:$microservice,"labels.squad":$squad,"labels.env":$deploy_env,eksClusterName:$cluster,image:$image,tag:$tag,namespace:$namespace,time:$timestamp,buildnumber:$buildnumber,triggeredby: $triggeredby}' ${MICROSERVICE}-$EPOCHTIMESTAMP-$UUID.json > temp1.json
+                        mv temp1.json ${MICROSERVICE}-$EPOCHTIMESTAMP-$UUID.json
+                        # Connect to TnT LE account
+                        aws s3 cp ${MICROSERVICE}-$EPOCHTIMESTAMP-$UUID.json s3://ec1-tnt-s3-deployment-track --profile default
+                        rm -rf ${MICROSERVICE}-$EPOCHTIMESTAMP-$UUID.json
+                        aws s3 cp ${SQUAD_SHORT_NAME}.json s3://ec1-tnt-s3-cd-helm-output/${DEPLOY_ENV}/${SQUAD_SHORT_NAME}/_inventory/ --profile default
+                    '''
+                }
+                
+                stage('Get K8s Previous Deployed Image') {
+                    FAILED_STAGE=env.STAGE_NAME
+                    
+                    sh label: 'Configuring AWS', script: """
+                        if ! grep -qR "${ASSUME_PROFILE}-${DEPLOY_ENV}" ~/.aws/config; then
+                            aws configure --profile ${ASSUME_PROFILE}-${DEPLOY_ENV} set role_arn arn:aws:iam::${ACCOUNT_NUMBER}:role/JenkinsRoleDEV
+                            aws configure --profile ${ASSUME_PROFILE}-${DEPLOY_ENV} set region eu-central-1
+                            aws configure --profile ${ASSUME_PROFILE}-${DEPLOY_ENV} set source_profile default
+                        fi
+                        aws eks --region eu-central-1 update-kubeconfig --name ${EKS_CLUSTER_NAME} --profile ${ASSUME_PROFILE}-${DEPLOY_ENV} --kubeconfig ${WORKSPACE}/kube.config
+                    """
+                    def cmdResult = sh label: 'Get Previous Image Tag', returnStdout: true, script: """
+                        export PATH=/usr/local/bin:$PATH
+                        kubectl get  -f ./${MICROSERVICE}/deployment.yaml -n ${DEPLOY_NAMESPACE} --kubeconfig ${WORKSPACE}/kube.config -ojson | jq '.spec.template.spec.containers[0].image' --raw-output
+                    """
+                    env.PREV_IMAGE_TAG = cmdResult?.split(" ")?.findAll{val->val.contains(IMAGE_REPO)}[0]?.split(":")?.last()?.trim()
+                    echo "K8s PREV_IMAGE_TAG : $PREV_IMAGE_TAG"
+                }
+                
+                stage('Deploy Chart') {
+                    FAILED_STAGE=env.STAGE_NAME
+                    echo '##################################################'
+                    echo 'Deploy Helm Chart'
+                    echo '##################################################'
+                    
+                    sh label: 'Deploying Chart', script: '''
+                        if ! grep -qR "${ASSUME_PROFILE}-${DEPLOY_ENV}" ~/.aws/config; then
+                            aws configure --profile ${ASSUME_PROFILE}-${DEPLOY_ENV} set role_arn arn:aws:iam::${ACCOUNT_NUMBER}:role/JenkinsRoleDEV
+                            aws configure --profile ${ASSUME_PROFILE}-${DEPLOY_ENV} set region eu-central-1
+                            aws configure --profile ${ASSUME_PROFILE}-${DEPLOY_ENV} set source_profile default
+                        fi
+                        aws eks --region eu-central-1 update-kubeconfig --name ${EKS_CLUSTER_NAME} --profile ${ASSUME_PROFILE}-${DEPLOY_ENV} --kubeconfig ${WORKSPACE}/kube.config
+                        export PATH=/usr/local/bin:$PATH
+                        kubectl version --short --kubeconfig ${WORKSPACE}/kube.config
+                        kubectl get nodes --kubeconfig ${WORKSPACE}/kube.config
+                        cd ./${MICROSERVICE}
+                        tree ./
+                        kubectl apply -f ./ -n ${DEPLOY_NAMESPACE} --kubeconfig ${WORKSPACE}/kube.config
+                    '''
+                }
+                
+                stage("Associate Component Tag in Nexus") {
+                    FAILED_STAGE=env.STAGE_NAME
+                    
+                    try {
+                        withCredentials([usernamePassword(credentialsId: 'nexus-service-account', usernameVariable: 'nexusUser', passwordVariable: 'nexusPass')]) {
+                            if (PREV_IMAGE_TAG) {
+                                def deAssociateStatus= sh label: 'remove tag association', returnStdout: true, script: """
+                                curl -i -u \${nexusUser}:\${nexusPass} -X DELETE 'https://${NEXUS_URL}/service/rest/v1/tags/associate/${DEPLOY_ENV}?repository=${IMAGE_REPO_NAME}&name=${MICROSERVICE}&version=${PREV_IMAGE_TAG}'
+                                """
+                                if (deAssociateStatus && deAssociateStatus.contains("Disassociation successful")) {
+                                    echo "Component tag ${DEPLOY_ENV} de-associated successfully for ${IMAGE_REPO_NAME}/${MICROSERVICE}/${PREV_IMAGE_TAG} in Nexus."
+                                } else {
+                                    echo "Component tag ${DEPLOY_ENV} de-association failed for ${IMAGE_REPO_NAME}/${MICROSERVICE}/${PREV_IMAGE_TAG} or does not exists in Nexus"
+                                }
+                            }
+                            def associateStatusCode= sh label: 'add tag association', returnStdout: true, script: """
+                            curl -i -u \${nexusUser}:\${nexusPass} -X POST 'https://${NEXUS_URL}/service/rest/v1/tags/associate/${DEPLOY_ENV}?repository=${IMAGE_REPO_NAME}&name=${MICROSERVICE}&version=${IMAGE_TAG}'
+                            """
+                            
+                            if (associateStatusCode && associateStatusCode.contains("Association successful")) {
+                                echo "Component tag ${DEPLOY_ENV} associated successfully for ${IMAGE_REPO_NAME}/${MICROSERVICE}/${IMAGE_TAG} in Nexus."
+                            } else {
+                                echo "Component tag ${DEPLOY_ENV} associated failed for ${IMAGE_REPO_NAME}/${MICROSERVICE}/${IMAGE_TAG} in Nexus"
+                            }
+                        }
+                    } catch(all) {
+                       println(all.getMessage())
+                    }
+                }
+                
+                stage('Notify') {
+                    echo "Success"
+                    office365ConnectorSend webhookUrl: "https://ikanocloud.webhook.office.com/webhookb2/b0c5af75-739c-44cf-9ef5-94c93f09941e@e7316e9b-9425-4380-8303-592804bd706f/JenkinsCI/359e80c6222249c8b28040a014a9e089/1aca1398-c6ef-4f3a-b1c4-f52c5ad9c560",
+                    message: "This is an update regarding ${JOB_BASE_NAME}, the job was build successfully. Build ${BUILD_DISPLAY_NAME} triggered at ${BUILD_TIMESTAMP}. Please click on the 'View Build' button and verify the build.",
+                    status: "Success",
+                    factDefinitions: [[name: "User", template: "Triggered by user ${triggeredByUser}"]]
+                }
+                
+                stage('Auto CT Trigger') {
+                    FAILED_STAGE=env.STAGE_NAME
+                    
+                    sleep 30
+                    def squadName = "${JOB_NAME}".split('/')[0]
+                    def jobName = "${JOB_BASE_NAME}".replaceAll('\\-cd', '-CT')
+                    def envName = "dev"
+                    try {
+                        build job: "${squadName}/${squadName}_${envName}/${squadName}_CT/${jobName}", propagate: false, wait: false
+                    } catch(all) {
+                        echo "The CT pipeline may not exist yet."
+                    }
+                }
+            } catch(all) {
+                String errorMessage = all.getMessage();
+                stage('Notify') {
+                    echo "Failure: ${errorMessage}"
+                    office365ConnectorSend webhookUrl: "https://ikanocloud.webhook.office.com/webhookb2/b0c5af75-739c-44cf-9ef5-94c93f09941e@e7316e9b-9425-4380-8303-592804bd706f/JenkinsCI/359e80c6222249c8b28040a014a9e089/1aca1398-c6ef-4f3a-b1c4-f52c5ad9c560",
+                    message: "The Jenkins job ${JOB_BASE_NAME} has failed in the ${FAILED_STAGE} stage for Build ${BUILD_DISPLAY_NAME} triggered at ${BUILD_TIMESTAMP}. Please click on the 'View Build' button and verify the build.",
+                    status: "Failure",
+                    factDefinitions: [[name: "Stage", template: "${FAILED_STAGE}"], [name: "Error Message", template: errorMessage], [name: "User", template: "Triggered by user ${triggeredByUser}"]]
+                }
+                currentBuild.result = 'FAILURE'
+            } finally {
+                cleanWs()
+            }
+        }
+    } catch(org.jenkinsci.plugins.workflow.steps.FlowInterruptedException e) {
+        stage('Notify Timeout to TnT') {
+            echo "Aborted"
+            office365ConnectorSend webhookUrl: "https://ikanocloud.webhook.office.com/webhookb2/b0c5af75-739c-44cf-9ef5-94c93f09941e@e7316e9b-9425-4380-8303-592804bd706f/JenkinsCI/c9cec34dc0ff405da44096f6b38ab4dc/51dc4d82-468d-4b1b-af65-ee6608e313e3",
+            message: "The Jenkins job ${JOB_BASE_NAME} has failed. Build ${BUILD_DISPLAY_NAME} triggered at ${BUILD_TIMESTAMP}. Please click on the 'View Build' button and verify the build.",
+            status: "ABORTED",
+            factDefinitions: [ [name: "Error Message", template: "Aborted due to timeout after 20 minutes."]]
+            currentBuild.result = 'FAILURE'
+        }
+    }
+}

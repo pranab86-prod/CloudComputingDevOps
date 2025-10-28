@@ -1,0 +1,167 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "VPC, Subnet, IGW, RouteTable, SecurityGroup, and Multiple Ubuntu EC2s via AutoScalingGroup"
+
+Parameters:
+  KeyName:
+    Description: Name of an existing EC2 KeyPair to enable SSH access
+    Type: AWS::EC2::KeyPair::KeyName
+  DesiredCapacity:
+    Type: Number
+    Default: 3
+    Description: Number of EC2 instances to launch
+  InstanceType:
+    Type: String
+    Default: t3.micro
+    AllowedValues:
+      - t2.micro
+      - t3.micro
+      - t3.small
+      - t3.medium
+    Description: EC2 instance type
+
+Resources:
+  # -------------------------
+  # VPC
+  # -------------------------
+  ProdVPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: Prod-VPC
+
+  # -------------------------
+  # Subnet
+  # -------------------------
+  ProdSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref ProdVPC
+      CidrBlock: 10.0.1.0/24
+      MapPublicIpOnLaunch: true
+      AvailabilityZone: !Select [ 0, !GetAZs "" ]
+      Tags:
+        - Key: Name
+          Value: Prod-Subnet
+
+  # -------------------------
+  # Internet Gateway
+  # -------------------------
+  ProdInternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: Prod-igw
+
+  AttachGateway:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref ProdVPC
+      InternetGatewayId: !Ref ProdInternetGateway
+
+  # -------------------------
+  # Route Table
+  # -------------------------
+  ProdRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref ProdVPC
+      Tags:
+        - Key: Name
+          Value: Prod-routetable
+
+  ProdRoute:
+    Type: AWS::EC2::Route
+    DependsOn: AttachGateway
+    Properties:
+      RouteTableId: !Ref ProdRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref ProdInternetGateway
+
+  SubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref ProdSubnet
+      RouteTableId: !Ref ProdRouteTable
+
+  # -------------------------
+  # Security Group
+  # -------------------------
+  ProdSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow SSH and HTTP
+      VpcId: !Ref ProdVPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          FromPort: 0
+          ToPort: 0
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: Prod-sg
+
+  # -------------------------
+  # Launch Template
+  # -------------------------
+  ProdLaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateName: prod-launch-template
+      LaunchTemplateData:
+        InstanceType: !Ref InstanceType
+        KeyName: !Ref KeyName
+        SecurityGroupIds:
+          - !Ref ProdSecurityGroup
+        ImageId: ami-03aa99ddf5498ceb9 # Ubuntu 22.04 LTS (update AMI per region)
+        TagSpecifications:
+          - ResourceType: instance
+            Tags:
+              - Key: Name
+                Value: Prod-ubuntu-ec2
+
+  # -------------------------
+  # Auto Scaling Group
+  # -------------------------
+  ProdAutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      VPCZoneIdentifier:
+        - !Ref ProdSubnet
+      MinSize: 1
+      MaxSize: 5
+      DesiredCapacity: !Ref DesiredCapacity
+      LaunchTemplate:
+        LaunchTemplateId: !Ref ProdLaunchTemplate
+        Version: !GetAtt ProdLaunchTemplate.LatestVersionNumber
+      Tags:
+        - Key: Name
+          Value: Prod-ubuntu-ec2
+          PropagateAtLaunch: true
+
+Outputs:
+  VPCId:
+    Description: VPC ID
+    Value: !Ref ProdVPC
+  SubnetId:
+    Description: Subnet ID
+    Value: !Ref ProdSubnet
+  SecurityGroupId:
+    Description: Security Group ID
+    Value: !Ref ProdSecurityGroup
+  AutoScalingGroupName:
+    Description: Auto Scaling Group Name
+    Value: !Ref ProdAutoScalingGroup

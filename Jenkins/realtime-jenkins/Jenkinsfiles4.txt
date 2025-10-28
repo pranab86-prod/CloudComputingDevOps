@@ -1,0 +1,254 @@
+node(env.JENKINS_NODE) {
+	try {
+		def triggeredBy = currentBuild.getBuildCauses('hudson.model.Cause$UserIdCause')[0]
+		timeout(60) {
+			try {
+               	stage('Loading Parameters') {
+					cleanWs()
+					echo '##################################################'
+					echo 'Loading Parameters'
+					echo '##################################################'
+					FAILED_STAGE=env.STAGE_NAME
+				
+					env.IS_ROLLBACK_ENABLED     = env.is_rollback_enabled?:false
+                    env.ROLLBACK_FAIL_THRESHOLD = env.rollback_fail_threshold?:5
+                    env.DOCKER_IMAG_TAG         = env.prev_docker_image_tag? env.prev_docker_image_tag.trim():""
+                    env.TRIGGER_ROLLBACK        = false
+                    echo "TRIGGER_ROLLBACK: $TRIGGER_ROLLBACK"
+                    echo "IS_ROLLBACK_ENABLED: $IS_ROLLBACK_ENABLED"
+                    echo "ROLLBACK_FAIL_THRESHOLD: $ROLLBACK_FAIL_THRESHOLD"
+                    echo "DOCKER_IMAG_TAG: $DOCKER_IMAG_TAG"
+				}
+
+				stage('GitHub Code CheckOut') {
+                    FAILED_STAGE=env.STAGE_NAME
+                    cleanWs()
+                    git branch: '${branch}', credentialsId: 'github-ikano-bank', url: '${scm}'
+                    
+                }
+				
+				stage('Directory Size Check') {
+					FAILED_STAGE=env.STAGE_NAME
+					
+					def retKB = sh(script: "du -s . | awk '{print \$1}'", returnStdout: true, label: 'Checking Size').trim()
+					echo "Directory size is ${retKB} KB."
+					
+					if (retKB.toInteger() > 10000) {
+						retMB = Math.round(retKB.toDouble() / 1024)
+						echo "Directory size is ${retMB} MB"
+						
+						// Send to TnT Teams Channel
+						office365ConnectorSend webhookUrl: "https://ikanocloud.webhook.office.com/webhookb2/b0c5af75-739c-44cf-9ef5-94c93f09941e@e7316e9b-9425-4380-8303-592804bd706f/JenkinsCI/6335d0b00d9a45df91081bb607625b56/1aca1398-c6ef-4f3a-b1c4-f52c5ad9c560", 
+						message: "The Jenkins job ${JOB_BASE_NAME} directory size is greater than 10 MB. Build ${BUILD_DISPLAY_NAME} triggered at ${BUILD_TIMESTAMP}. Please click on the View Build and verify the build.", 
+						factDefinitions: [ [name: "Directory Size Check", template: "Application directory size is greater than 10 MB. Current size: ${retMB} MB."]]
+						
+						// Send to Squad Teams Channel
+						office365ConnectorSend webhookUrl: "${TEAMS_CHANNEL}", 
+						message: "The Jenkins job ${JOB_BASE_NAME} directory size is greater than 10 MB. Build ${BUILD_DISPLAY_NAME} triggered at ${BUILD_TIMESTAMP}. Please click on the View Build and verify the build.", 
+						factDefinitions: [ [name: "Directory Size Check", template: "Application directory size is greater than 10 MB. Current size: ${retMB} MB."]]
+					} else {
+						echo "Directory size is less than 1 MB."
+					}
+				}
+				
+				stage('Git Secrets Scan') {
+					FAILED_STAGE=env.STAGE_NAME
+					
+					sh label: 'Fetching Patterns', script: '''
+						aws ssm get-parameters --name "/git-secrets/patterns" | jq -r '.Parameters[0].Value' > patterns.txt
+						aws ssm get-parameters --name "/git-secrets/allowed-patterns" | jq -r '.Parameters[0].Value' > .gitallowed
+					'''
+					
+					sh label: 'Scanning Files', script: '''
+						git secrets --install
+						git secrets --register-aws
+						git secrets --add-provider -- cat patterns.txt
+						git secrets --scan -r
+					'''
+				}
+				
+				stage('Get Java Version from build.gradle') {
+					FAILED_STAGE=env.STAGE_NAME
+					
+					// Read the contents of the build.gradle file
+					def buildGradleContent = readFile('build.gradle')
+					
+					// Use regular expressions to find the Java version
+					def javaVersionMatcher = buildGradleContent =~ /sourceCompatibility\s*=\s*JavaVersion\.VERSION_(\d+)/
+					
+					// Extract the Java version value
+					if (javaVersionMatcher) {
+						env.JAVA_VERSION = javaVersionMatcher[0][1]
+						
+						// Print the Java version for verification (optional)
+						echo "Java Version: ${JAVA_VERSION}"
+						
+						// Now you can use the javaVersion variable in subsequent stages of the pipeline
+						// For example, you can pass it to build or test tasks.
+						// For Gradle build, you might use something like:
+						// sh "./gradlew build -Djava.version=$javaVersion"
+					} else {
+						//error "Java version not found in build.gradle set default java 11"
+						env.JAVA_VERSION = '8'
+						echo "Java default Version: ${JAVA_VERSION}"
+					}
+				}
+				
+				stage('Functional Testing') {
+					FAILED_STAGE=env.STAGE_NAME
+					
+					sh label: 'Checking Code', script: '''
+						case $JAVA_VERSION in	
+							11)
+								export JAVA_HOME=/usr/lib/jvm/java-11/
+								~/tools/gradle-8.0.2/bin/gradle clean build -Dcucumber.filter.tags="${TAG}" -Prun=${RUNNER} 2>&1 | tee errorlogs
+								;;
+							17)
+								export JAVA_HOME=/usr/lib/jvm/java-17/
+								~/tools/gradle-8.4/bin/gradle clean build -Dcucumber.filter.tags="${TAG}" -Prun=${RUNNER} 2>&1 | tee errorlogs
+								;;
+							*)
+								gradle clean build -Dcucumber.filter.tags="${TAG}" -Prun=${RUNNER} 2>&1 | tee errorlogs
+								;;
+						esac
+					'''
+					failStagepipeline("errorlogs")
+				}
+				
+				stage('Notify') {
+					echo "Success"
+					office365ConnectorSend webhookUrl: "${TEAMS_CHANNEL}", 
+					message: "This is an update regarding ${JOB_BASE_NAME}, the job was build successfully. Build ${BUILD_DISPLAY_NAME} triggered at ${BUILD_TIMESTAMP}. Please click on the View Build button and verify the build.", 
+					status: "Success", 
+					factDefinitions: [[name: "User", template: "Triggered by user ${(triggeredBy) ? triggeredBy.userName : 'Jenkins (Scheduled)'}"]]
+				}
+			} catch(all) {
+				String errorMessage = all.getMessage();
+				stage('Notify') {
+					echo "Failure: ${errorMessage}"
+					office365ConnectorSend webhookUrl: "https://ikanocloud.webhook.office.com/webhookb2/b0c5af75-739c-44cf-9ef5-94c93f09941e@e7316e9b-9425-4380-8303-592804bd706f/JenkinsCI/359e80c6222249c8b28040a014a9e089/1aca1398-c6ef-4f3a-b1c4-f52c5ad9c560", 
+					message: "The Jenkins job ${JOB_BASE_NAME} has failed in the ${FAILED_STAGE} stage for Build ${BUILD_DISPLAY_NAME} triggered at ${BUILD_TIMESTAMP}. Please click on the View Build and verify the build.", 
+					status: "Failure", 
+					factDefinitions: [[name: "Stage", template: "${FAILED_STAGE}"], [name: "Error Message", template: errorMessage], [name: "User", template: "Triggered by user ${(triggeredBy) ? triggeredBy.userName : 'Jenkins (Scheduled)'}"]]
+					currentBuild.result = 'FAILURE'
+				}
+			}
+		}
+	} catch(org.jenkinsci.plugins.workflow.steps.FlowInterruptedException e) {
+		stage('Notify Timeout to TnT') {
+			echo "Aborted"
+			office365ConnectorSend webhookUrl: "https://ikanocloud.webhook.office.com/webhookb2/b0c5af75-739c-44cf-9ef5-94c93f09941e@e7316e9b-9425-4380-8303-592804bd706f/JenkinsCI/6335d0b00d9a45df91081bb607625b56/1aca1398-c6ef-4f3a-b1c4-f52c5ad9c560",message: "The jenkins job  $JOB_BASE_NAME has failed  Build # $BUILD_NUMBER triggered at $BUILD_TIMESTAMP. Please click on the View Build and verify the build.", 
+			status: "ABORTED", 
+			factDefinitions: [ [name: "Error Message", template: "Aborted due to timeout after 20 minutes."]]
+			currentBuild.result = 'FAILURE'
+		}
+	} finally {
+		def propsList = readFile('target/cucumber-reports/cucumber.properties')
+			.readLines()
+			.collect { line ->
+				def (key, value) = line.split('=').collect { it.trim() }
+				[key: key, value: value]
+			}
+			
+		cucumber buildStatus: "FAILURE", 
+			classifications: propsList, 
+			failedFeaturesNumber: -1, 
+			failedScenariosNumber: -1, 
+			failedStepsNumber: -1, 
+			fileIncludePattern: '**/*.json', 
+			jsonReportDirectory: 'target/cucumber-reports/', 
+			pendingStepsNumber: -1, 
+			skippedStepsNumber: -1, 
+			sortingMethod: 'ALPHABETICAL', 
+			undefinedStepsNumber: -1
+
+        checkIfRollbackIsNeeded("errorlogs") 
+        if(DOCKER_IMAG_TAG && DOCKER_IMAG_TAG!="" && IS_ROLLBACK_ENABLED.toBoolean() && env.TRIGGER_ROLLBACK.toBoolean()){        
+            stage('Rollback CD Deployment To Privious ImageTag') {
+              sleep 30
+              //TODO add notification for rollback
+              echo "Trigger CD job with image tag: ${DOCKER_IMAG_TAG}"
+               def squadName = "${JOB_NAME}".split('/')[0]
+               def jobName = "${JOB_BASE_NAME}".replaceAll('\\-CT', '-cd')
+               def envName = "dev"
+               try {
+                    build job: "${squadName}/${squadName}_${envName}/${squadName}_CD/${jobName}", propagate: false, wait: false, parameters: [
+                            [$class: 'StringParameterValue', name: 'DockerImageTag', value: DOCKER_IMAG_TAG],
+                            [$class: 'StringParameterValue', name: 'TRIGGERED_BY_CT', value: "true"]]
+                } catch(all) {
+                    println(all.getMessage())
+                    echo "The CD pipeline may not exist yet."
+                }
+            }
+        }else{
+            echo "Rollback will be skipped, Conditions not fulfilled!"
+            echo "TRIGGER_ROLLBACK: $env.TRIGGER_ROLLBACK"
+            echo "IS_ROLLBACK_ENABLED: $env.IS_ROLLBACK_ENABLED"
+            echo "ROLLBACK_FAIL_THRESHOLD: $env.ROLLBACK_FAIL_THRESHOLD"
+            echo "DOCKER_IMAG_TAG: $env.DOCKER_IMAG_TAG"
+        }     
+    }
+}
+
+def checkIfRollbackIsNeeded(logfile){
+	def logs = readFile logfile
+    //Results: FAILURE (6 tests, 1 successes, 5 failures, 0 skipped)
+	if(logs.contains("Total Exceptions Count ::::::::")) {
+        //Total Exceptions Count :::::::: 3
+	    echo 'No action to be taken.'
+        if(cmdLogs && cmdLogs.contains("Total Exceptions Count ::::::::")){
+           def totalExceptions= cmdLogs.split("Total Exceptions Count :::::::: ")?.last()?.trim()
+           if(totalExceptions && totalExceptions.toInteger() >= (ROLLBACK_FAIL_THRESHOLD?.toInteger())){
+              echo "Total Exceptions Count: $totalExceptions"
+              echo "Setting rollback flag to true , Total Exceptions Count more than the threshould : $ROLLBACK_FAIL_THRESHOLD"
+              env.TRIGGER_ROLLBACK=true
+            }
+         }
+    }else if(logs.toUpperCase().contains("RESULTS:")) {
+        //Results: FAILURE (6 tests, 1 successes, 5 failures, 0 skipped)
+		def cmdLogs = sh (script: "grep -A 1 Results:  " + logfile, returnStdout: true, label: 'Reading log file')
+        def testResult=[]
+        if(cmdLogs && cmdLogs.contains("Results")){
+            def testStatus=cmdLogs.substring(cmdLogs.indexOf(":")+1,cmdLogs.indexOf("(")).trim()
+            cmdLogs.substring(cmdLogs.indexOf("(")+1 ,cmdLogs.indexOf(")")).split(",").each{val->
+                            testResult.add(["name":val.trim().split(" ")[0],"value":val.trim().split(" ")[1]])
+
+            }
+
+            testResult.each{t-> println t.name+": "+t.value}
+            def failedTestCases= testResult.find{ts-> ts.name.toUpperCase()=="FAILURES"}?.value
+            if(failedTestCases && failedTestCases.toInteger() >= (ROLLBACK_FAIL_THRESHOLD?.toInteger())){
+            echo "Failed test count: $failedTestCases"
+            echo "Setting rollback flag to true , failed test cases are more than the threshould : $ROLLBACK_FAIL_THRESHOLD"
+            env.TRIGGER_ROLLBACK=true
+            }
+        }else{
+          echo "No test results found!"
+        }
+	} else {
+	    echo "Add more rollback cases, No action to be taken for now!"
+    }
+}
+
+def failStagepipeline(logfile){
+	def logs = readFile logfile
+	if(logs.toUpperCase().contains("FAILURE:")) {
+		def cmdLogs = sh (script: "grep -A 10 FAILURE " + logfile, returnStdout: true, label: 'Reading log file')
+		currentBuild.result = 'FAILURE'
+		error (cmdLogs)
+	} else if(logs.contains("ERROR: org.eclipse.jdt.core code=4 Could not retrieve declared methods java.lang.NullPointerException")) {
+	    echo 'No action to be taken.'
+	} else if(logs.contains("COMMAND")) {
+		def cmdLogs = sh (script: "grep -A 10 COMMAND " + logfile, returnStdout: true, label: 'Reading log file')
+		currentBuild.result = 'FAILURE'
+		error (cmdLogs)
+	} else if(logs.toUpperCase().contains("ERROR:")) {
+		def cmdLogs = sh (script: "tail -n 5 " + logfile, returnStdout: true, label: 'Reading log file')
+		currentBuild.result = 'FAILURE'
+		error (cmdLogs)
+	} else if(logs.contains("[ERROR] Matched one or more prohibited patterns")){
+        def cmdLogs = "Credentials stored in the source code needs to be removed"
+        currentBuild.result = 'FAILURE'
+		error (cmdLogs)
+	}
+}

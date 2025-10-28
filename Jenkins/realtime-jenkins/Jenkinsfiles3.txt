@@ -1,0 +1,456 @@
+node('slave_javamicroservices') {
+    try {
+        def specificCause = currentBuild.getBuildCauses('hudson.model.Cause$UserIdCause')[0]
+        timeout(20) {
+            try {
+                stage('GitHub Code CheckOut') {
+                    FAILED_STAGE=env.STAGE_NAME
+                    cleanWs()
+                    
+                    checkout([
+                        $class: 'GitSCM', 
+                        branches: [[name: '${branch}']], 
+                        userRemoteConfigs: [[credentialsId : 'github-ikano-bank', url: '${scm}']]
+                    ])
+                }
+                
+                stage('Directory Size Check') {
+                    FAILED_STAGE=env.STAGE_NAME
+                    
+                    def ret = sh(script: "du -s . | awk '{print \$1}'", returnStdout: true, label: 'Checking Size')
+                    echo "Repo size in KB is $ret"
+                    if(ret.toInteger() > 10000) {
+                        office365ConnectorSend webhookUrl: "https://ikanocloud.webhook.office.com/webhookb2/b0c5af75-739c-44cf-9ef5-94c93f09941e@e7316e9b-9425-4380-8303-592804bd706f/JenkinsCI/6335d0b00d9a45df91081bb607625b56/1aca1398-c6ef-4f3a-b1c4-f52c5ad9c560",
+                        message: "The Jenkins job  $JOB_BASE_NAME has Repo Size is greater than 10Mb Build # $BUILD_NUMBER triggered at $BUILD_TIMESTAMP. Please click on the View Build and verify the build.",
+                        factDefinitions: [ [name: "Directory Size Check", template: "Application directory size is greater than 10Mb. Current size: $ret KB."]]
+                        
+                        office365ConnectorSend webhookUrl: "https://ikanocloud.webhook.office.com/webhookb2/b0c5af75-739c-44cf-9ef5-94c93f09941e@e7316e9b-9425-4380-8303-592804bd706f/JenkinsCI/323941dbabf04afd8a0129facb47cddb/1aca1398-c6ef-4f3a-b1c4-f52c5ad9c560",
+                        message: "The Jenkins job  $JOB_BASE_NAME has Repo Size is greater than 10Mb Build # $BUILD_NUMBER triggered at $BUILD_TIMESTAMP. Please click on the View Build and verify the build.",
+                        factDefinitions: [ [name: "Directory Size Check", template: "Application directory size is greater than 10Mb. Current size: $ret KB."]]
+                        }
+                }
+                
+                stage('Git Secrets Scan') {
+                    FAILED_STAGE=env.STAGE_NAME
+                    
+                    sh label: 'Checking for Secrets', script: '''
+                        git secrets --install
+                        git secrets --register-aws
+                        git secrets --scan
+                    '''
+                    
+                    sh label: 'Checking Code', script: '''
+                        if grep -H -r "sonar.coverage.exclusions" .; then                                               
+                            echo "DONT ADD SONAR EXCLUSIONS AS PART OF CODE"
+                            exit 1
+                        else
+                            echo "Proceed to SonarQube Analysis"
+                        fi
+                    '''
+                }
+                 stage('Get Java Version from build.gradle') 
+                 {
+                    // Read the contents of the build.gradle file
+                    def buildGradleContent = readFile('build.gradle')
+
+                    // Use regular expressions to find the Java version
+                    def javaVersionMatcher = buildGradleContent =~ /sourceCompatibility\s*=\s*JavaVersion\.VERSION_(\d+)/
+
+                    // Extract the Java version value
+                    if (javaVersionMatcher) {
+                        env.JAVA_VERSION = javaVersionMatcher[0][1]
+
+                        // Print the Java version for verification (optional)
+                        echo "Java Version: $JAVA_VERSION"
+                        
+                        // Now you can use the javaVersion variable in subsequent stages of the pipeline
+                        // For example, you can pass it to build or test tasks.
+                        // For Gradle build, you might use something like:
+                        // sh "./gradlew build -Djava.version=$javaVersion"
+                    } else {
+                        //error "Java version not found in build.gradle set default java 11"
+                        env.JAVA_VERSION = '8'
+                        echo "Java default Version: $JAVA_VERSION"
+                    }
+                }
+                stage('Build & Unit Test') {
+                    FAILED_STAGE=env.STAGE_NAME
+                    
+                    sh label: 'Building Code', script: '''
+                    case $JAVA_VERSION in
+                            11|java11)
+                                export JAVA_HOME=/usr/lib/jvm/java-11/
+                                gradle clean build --refresh-dependencies 2>&1 | tee errorlogs
+                                ;;
+                            17|java17)
+                                export JAVA_HOME=/usr/lib/jvm/java-17/
+                                ~/tools/gradle-7.4.2/bin/gradle clean build --refresh-dependencies 2>&1 | tee errorlogs
+                                ;;
+                            *)
+                                gradle clean build --refresh-dependencies 2>&1 | tee errorlogs
+                                ;;
+                        esac
+                    '''
+                    
+                    def testReport = findFiles(glob: '**/test-results/test/*.xml')
+                    if(testReport.length > 0) {
+                        junit '**/test-results/test/*.xml'
+                    } else {
+                        echo 'No test reports available.'
+                    }
+                    failStagepipeline("errorlogs")
+                }
+                
+                stage('Dependency Check') {
+                    FAILED_STAGE=env.STAGE_NAME
+                    
+                    // Checkout suppression XML (Whitelist)
+                    checkout([
+                        $class: 'GitSCM', branches: [[name: 'develop']], extensions: [[$class: 'RelativeTargetDirectory', relativeTargetDir: 'dependency-check']],
+                        userRemoteConfigs: [[url: 'https://github.com/ikano-bank/tnt_dependency_check_suppressions', credentialsId: 'github-ikano-bank']]
+                    ])
+                    
+                    sh label: 'Checking for CVEs', script: '''
+                        mkdir -p dependency-check-reports
+                        /var/lib/jenkins/tools/dependency-check/bin/dependency-check.sh \
+                            --scan ./build \
+                            --disableOssIndex \
+                            --disableCentral \
+                            --disableAssembly \
+                            --format XML --format HTML --format CSV \
+                            --out ${WORKSPACE}/dependency-check-reports \
+                            --suppression ${WORKSPACE}/dependency-check/owasp-suppressions.xml
+                    '''
+                    dependencyCheckPublisher pattern: 'dependency-check-reports/dependency-check-report.xml'
+                    
+                    def xmlFile = readFile("${WORKSPACE}/dependency-check-reports/dependency-check-report.xml")
+                    criticalCount = xmlFile.count("</name><severity>CRITICAL</severity>")
+                    highCount = xmlFile.count("</name><severity>HIGH</severity>")
+                    mediumCount = xmlFile.count("</name><severity>MEDIUM</severity>")
+                    lowCount = xmlFile.count("</name><severity>LOW</severity>")
+
+                    env.DCHECK_RESULTS = "${criticalCount}, ${highCount}, ${mediumCount}, ${lowCount}"
+                    
+                    def errorMessage = "Build failed due to vulnerabilities found during Dependency-Check scan. Please check the report by clicking on the \"Dependency-Check\" button in the build page."
+                    //testSecurityThresholds(criticalCount, highCount, mediumCount, lowCount, errorMessage)
+                    
+                    publishToS3("dependency-check-reports", "ec1-le-s3-dependencycheck-reports")
+                }
+                
+                stage('SonarQube Code Analysis') {
+                    FAILED_STAGE=env.STAGE_NAME                    
+                    withSonarQubeEnv('SonarQube') {  
+                        sh label: 'Analyzing Code', script: '''
+                            
+                            case $JAVA_VERSION in
+                                11|java11)
+                                    export JAVA_HOME=/usr/lib/jvm/java-11/
+                                    gradle jacocoTestReport sonarqube -Dsonar.host.url=${SONAR_HOST_URL}  -Dsonar.dependencyCheck.jsonReportPath=dependency-check-report.json -Dsonar.dependencyCheck.htmlReportPath=dependency-check-report.html -Dsonar.dependencyCheck.securityHotspot=false -Dsonar.dependencyCheck.summarize=true 2>&1 | tee errorlogs, label: 'Analysing Code ...'
+                                    ;;
+                                17|java17)
+                                    export JAVA_HOME=/usr/lib/jvm/java-17/
+                                    ~/tools/gradle-7.4.2/bin/gradle jacocoTestReport sonarqube -Dsonar.host.url=${SONAR_HOST_URL}  -Dsonar.dependencyCheck.jsonReportPath=dependency-check-report.json -Dsonar.dependencyCheck.htmlReportPath=dependency-check-report.html -Dsonar.dependencyCheck.securityHotspot=false -Dsonar.dependencyCheck.summarize=true 2>&1 | tee errorlogs, label: 'Analysing Code ...'
+                                    ;;
+                                *)
+                                    gradle jacocoTestReport sonarqube -Dsonar.host.url=${SONAR_HOST_URL}  -Dsonar.dependencyCheck.jsonReportPath=dependency-check-report.json -Dsonar.dependencyCheck.htmlReportPath=dependency-check-report.html -Dsonar.dependencyCheck.securityHotspot=false -Dsonar.dependencyCheck.summarize=true 2>&1 | tee errorlogs, label: 'Analysing Code ...'
+                                    ;;
+                            esac
+                        '''
+                        sleep 10;
+                    }
+                    failStagepipeline("errorlogs")
+                }
+                
+                stage("SonarQube Quality-Gate Validation") {
+                    FAILED_STAGE=env.STAGE_NAME
+                    
+                    echo "Quality Gate Verification ..."
+                    timeout(time: 1, unit: 'MINUTES') {
+                        def qg = waitForQualityGate()
+                        if (qg.status != 'OK') {
+                            error "Pipeline aborted due to quality gate failure: ${qg.status}"
+                        }
+                    }
+                }
+                
+                stage('Upload Artifact to Nexus') {
+                    FAILED_STAGE=env.STAGE_NAME
+                    sh label: 'Publishing to Nexus', script: '''
+                        
+                        case $JAVA_VERSION in
+                            11|java11)
+                                export JAVA_HOME=/usr/lib/jvm/java-11/
+                                gradle publish 2>&1 | tee errorlogs
+                                ;;
+                            17|java17)
+                                export JAVA_HOME=/usr/lib/jvm/java-17/
+                                ~/tools/gradle-7.4.2/bin/gradle publish 2>&1 | tee errorlogs
+                                ;;
+                            *)
+                                gradle publish 2>&1 | tee errorlogs
+                                ;;
+                        esac
+                    '''
+                    failStagepipeline("errorlogs")
+                }
+                
+                stage('Build Docker Image') {
+                    FAILED_STAGE=env.STAGE_NAME
+                    
+                    def TIMESTAMP = new Date().format("yyyyMMdd.HHmm")
+                    def pomPath = findFiles(glob: '**/*pom*.xml')
+                    def pom = readMavenPom file: pomPath[0].path
+                    env.appName = pom.artifactId.toLowerCase()
+                    env.appVersion = pom.version
+                    env.imageTag = "${env.appVersion}-${BUILD_NUMBER}-${TIMESTAMP}"
+                    env.registryUrlECR = "000186693631.dkr.ecr.eu-central-1.amazonaws.com/anchore-scan"
+                    env.registryUrlNexus = "containers.le.tnt.bank.ikano"
+                    
+                    sh label: 'Building Docker Image', script: """
+                        docker build --no-cache -t ${env.appName}:${env.imageTag} .
+                    """
+                    
+                    sh label: 'Tagging Docker Image', script: """
+                        #docker tag ${env.appName}:${env.imageTag} ${env.registryUrlECR}:${env.appName}-${env.imageTag}
+                        docker tag ${env.appName}:${env.imageTag} ${env.registryUrlNexus}/${env.appName}:${env.imageTag}
+                    """
+                }
+                
+                stage('Docker Bench Scan') {
+                    FAILED_STAGE=env.STAGE_NAME
+                    
+                    // Docker Bench for Security
+                    sh label: 'Security Checks', script: """
+                        mkdir docker-bench-logs
+                        docker run --rm --net host --pid host --userns host --cap-add audit_control \\
+                            -v /etc:/etc:ro \\
+                            -v /usr/bin/containerd:/usr/bin/containerd:ro \\
+                            -v /usr/bin/runc:/usr/bin/runc:ro \\
+                            -v /usr/lib/systemd:/usr/lib/systemd:ro \\
+                            -v /var/lib:/var/lib:ro \\
+                            -v /var/run/docker.sock:/var/run/docker.sock:ro \\
+                            --label docker_bench_security \\
+                            containers.le.tnt.bank.ikano/docker-bench-security -c check_4_6,check_4_7,check_4_9 \\
+                            -t ${env.appName}:${env.imageTag} -i ${env.appName} \\
+                            | tee docker-bench-logs/dockerbench-logs
+                    """
+                    
+                    publishToS3("docker-bench-logs", "ec1-le-s3-dockerbench-logs")
+                    
+                    // Checking Score
+                    def score = sh (script: "cat docker-bench-logs/dockerbench-logs | grep 'Score:' | awk '{print \$3}'", returnStdout: true, label: 'Checking score').trim()
+                    if (score.toInteger() < 1) {
+                        error("Security checks failed. Insufficient score. Presence of WARN or FAIL checks.")
+                    }
+                }
+                
+                /*stage("Push Docker Image to ECR") {
+                    FAILED_STAGE=env.STAGE_NAME
+                    
+                    sh label: 'Pushing Image to ECR', script: """
+                        aws ecr get-login-password | docker login --username AWS --password-stdin ${env.registryUrlECR}
+                        docker push ${env.registryUrlECR}:${env.appName}-${env.imageTag}
+                    """
+                }*/
+                
+           /*     stage('Scan Image with Grype') {
+                    FAILED_STAGE=env.STAGE_NAME
+                    
+                    sh label: 'Fetching Allow-List & Template', script: '''
+                        aws s3 cp s3://ec1-le-s3-grype-whitelists/common-whitelist.yaml .grype.yaml
+                        aws s3 cp s3://ec1-le-s3-grype-whitelists/grype.tmpl .
+                    '''
+                    
+                    sh label: 'Scanning with Grype', script: """
+                        mkdir grype-reports && \
+                        grype docker:${env.appName}:${env.imageTag} -o template -t grype.tmpl |& tee grype-reports/grype.log
+                    """
+                    
+                    publishToS3("grype-reports", "ec1-le-tnt-grype-reports")
+                    
+                    def logLines = readFile('grype-reports/grype.log').readLines()
+                    def criticalCount = logLines.findAll { it.contains('CRITICAL') }.size()
+                    def highCount = logLines.findAll { it.contains('HIGH') }.size()
+                    def mediumCount = logLines.findAll { it.contains('MEDIUM') }.size()
+                    def lowCount = logLines.findAll { it.contains('LOW') }.size()
+                    
+                    def errorMessage = "Build failed due to vulnerabilities found during Grype scan. Please check the console build output."
+                    testSecurityThresholds(criticalCount, highCount, mediumCount, lowCount, errorMessage)
+                }                
+                
+                /*stage('ImageScan Anchore') {
+                    FAILED_STAGE=env.STAGE_NAME
+                
+                    node('slave_anchore_auto') {
+                        cleanWs()
+                    
+                        def imageFull = "${env.registryUrlECR}:${env.appName}-${env.imageTag}"
+                        
+                        sh label: 'Scanning with Anchore', script: """
+                            alias docker-compose='docker-compose -f ~/docker-compose.yaml'
+                            docker-compose exec -T api anchore-cli image add ${imageFull}
+                            docker-compose exec -T api anchore-cli image wait ${imageFull}
+                            #docker-compose exec -T api anchore-cli image vuln ${imageFull} all
+                            #docker-compose exec -T api anchore-cli evaluate check ${imageFull}
+                        """
+                        
+                        sh label: 'Fetching Reports & Status', script: """
+                            alias docker-compose='docker-compose -f ~/docker-compose.yaml'
+                            
+                            REPORTS_DIR="./anchore-reports"
+                            mkdir -p \$REPORTS_DIR
+                            
+                            ## Reports
+                            docker-compose exec -T api anchore-cli --json image content ${imageFull} files > \$REPORTS_DIR/${env.appName}_${env.imageTag}-content-files.json
+                            docker-compose exec -T api anchore-cli --json image content ${imageFull} java > \$REPORTS_DIR/${env.appName}_${env.imageTag}-content-java.json
+                            docker-compose exec -T api anchore-cli --json image content ${imageFull} os > \$REPORTS_DIR/${env.appName}_${env.imageTag}-content-os.json
+                            docker-compose exec -T api anchore-cli --json image content ${imageFull} malware > \$REPORTS_DIR/${env.appName}_${env.imageTag}-content-malware.json
+                            docker-compose exec -T api anchore-cli --json image get ${imageFull} > \$REPORTS_DIR/${env.appName}_${env.imageTag}-details.json
+                            docker-compose exec -T api anchore-cli --json image vuln ${imageFull} all > \$REPORTS_DIR/${env.appName}_${env.imageTag}-vuln.json
+                            
+                            ## Evaluation
+                            set +e
+                            docker-compose exec -T api anchore-cli evaluate check ${imageFull} --detail > anchore.log
+                            awk 'NR >= 10' anchore.log
+                        """
+                        publishToS3("anchore-reports", "ec1-le-tnt-anchore-reports")
+                        
+                        // Parsing Anchore logs for CVEs
+                        def logs = readFile 'anchore.log'
+                        //println(logs)
+                        def logLines = logs.readLines()
+                        
+                        criticalCount = logLines.findAll { it.contains('CRITICAL') && !it.contains('whitelisted') }.size()
+                        highCount = logLines.findAll { it.contains('HIGH') && !it.contains('whitelisted') }.size()
+                        mediumCount = logLines.findAll { it.contains('MEDIUM') && !it.contains('whitelisted') }.size()
+                        lowCount = logLines.findAll { it.contains('LOW') && !it.contains('whitelisted') }.size()
+                        
+                        def errorMessage = "Build failed due to vulnerabilities found during Anchore scan. Please check the console build output."
+                        testSecurityThresholds(criticalCount, highCount, mediumCount, lowCount, errorMessage)
+                    }
+                }*/
+                
+                stage("Push Docker Image to Nexus"){
+                    FAILED_STAGE=env.STAGE_NAME
+                    
+                    withCredentials([usernamePassword(credentialsId: 'nexus-service-account', usernameVariable: 'registryUser', passwordVariable: 'registryPass')]) {
+                        sh label: 'Pushing Image', script: """
+                            echo $registryPass | docker login -u $registryUser --password-stdin https://${env.registryUrlNexus}
+                            docker push ${env.registryUrlNexus}/${env.appName}:${env.imageTag}
+                            docker image rm -f ${env.appName}:${env.imageTag} ${env.registryUrlNexus}/${env.appName}:${env.imageTag} #${env.registryUrlECR}:${env.appName}-${env.imageTag}
+                        """
+                        echo "Image ID to be used for CD: ${env.imageTag}"
+                    }
+                }
+                
+                stage('Notify') {  
+                    office365ConnectorSend webhookUrl: "https://ikanocloud.webhook.office.com/webhookb2/b0c5af75-739c-44cf-9ef5-94c93f09941e@e7316e9b-9425-4380-8303-592804bd706f/JenkinsCI/323941dbabf04afd8a0129facb47cddb/1aca1398-c6ef-4f3a-b1c4-f52c5ad9c560",message: "This is an update regarding $JOB_NAME, the job was build successfully. Build # $BUILD_NUMBER triggered at $BUILD_TIMESTAMP. Please click on the View Build button and verify the build",
+                    status: "Success",
+                    factDefinitions: [[name: "User", template: "Triggered by user ${env.committerName ? committerName : specificCause.userName}"]]
+                }
+                
+                stage('Auto CD Trigger') {
+                    def squadName = "${JOB_NAME}".split('/')[0]
+                    try {
+                        build job: "${squadName}/${squadName}_dev/${squadName}_CD/${JOB_BASE_NAME}-cd", propagate: false, wait: false, parameters: [
+                            [$class: 'StringParameterValue', name: 'DockerImageTag', value: env.imageTag]
+                        ]
+                    } catch(all) {
+                        println(all.getMessage())
+                        echo "The CD pipeline may not exist yet."
+                    }
+                }
+            } catch(all) {
+                String errorMessage = all.getMessage();
+                stage('Notify') {
+                    echo "Failure: ${errorMessage}"
+                    office365ConnectorSend webhookUrl: "https://ikanocloud.webhook.office.com/webhookb2/b0c5af75-739c-44cf-9ef5-94c93f09941e@e7316e9b-9425-4380-8303-592804bd706f/JenkinsCI/323941dbabf04afd8a0129facb47cddb/1aca1398-c6ef-4f3a-b1c4-f52c5ad9c560",message: "The jenkins job  $JOB_BASE_NAME has failed in the ${FAILED_STAGE} stage for Build # $BUILD_NUMBER triggered at $BUILD_TIMESTAMP. Please click on the View Build and verify the build.",
+                    status: "Failure",
+                    factDefinitions: [[name: "Stage", template: "${FAILED_STAGE}"], [name: "Error Message", template: errorMessage], [name: "User", template: "Triggered by user ${env.committerName ? committerName : specificCause.userName}"]]
+                    currentBuild.result = 'FAILURE'
+                }
+            } finally {
+                removeImage()
+            }
+        }
+    } catch(org.jenkinsci.plugins.workflow.steps.FlowInterruptedException e){
+        stage('Notify Timeout to TnT') {
+            office365ConnectorSend webhookUrl: "https://ikanocloud.webhook.office.com/webhookb2/b0c5af75-739c-44cf-9ef5-94c93f09941e@e7316e9b-9425-4380-8303-592804bd706f/JenkinsCI/6335d0b00d9a45df91081bb607625b56/1aca1398-c6ef-4f3a-b1c4-f52c5ad9c560",message: "The jenkins job  $JOB_BASE_NAME has failed  Build # $BUILD_NUMBER triggered at $BUILD_TIMESTAMP. Please click on the View Build and verify the build.",
+            status: "ABORTED",
+            factDefinitions: [ [name: "Error Message", template: "Aborted due to timeout after 20 minutes"]]
+            currentBuild.result = 'FAILURE'
+        }
+    }
+}
+
+def removeImage() {
+    sh label: 'Removing Docker Image', script: """
+        if [[ ! "\$(docker images -q ${env.appName}:${env.imageTag} 2> /dev/null)" == "" ]]; then
+            docker image rm -f ${env.appName}:${env.imageTag} ${env.registryUrlNexus}/${env.appName}:${env.imageTag} #${env.registryUrlECR}:${env.appName}-${env.imageTag}
+        fi
+    """
+}
+
+def failStagepipeline(errormessage) {
+    def logs = readFile errormessage
+    if(logs.contains("FAILURE:")) {
+        def cmdLogs = sh (script: "grep -A 10 FAILURE " + errormessage, returnStdout: true, label: 'Reading log file')
+        currentBuild.result = 'FAILURE'
+        error (cmdLogs)
+    } else if(logs.contains("ERROR: org.eclipse.jdt.core code=4 Could not retrieve declared methods java.lang.NullPointerException")) {
+        echo 'No action to be taken.'
+    } else if(logs.contains("COMMAND")) {
+        def cmdLogs = sh (script: "grep -A 10 COMMAND " + errormessage, returnStdout: true, label: 'Reading log file')
+        currentBuild.result = 'FAILURE'
+        error (cmdLogs)
+    } else if(logs.contains("ERROR:")) {
+        def cmdLogs = sh (script: "tail -n 5 " + errormessage, returnStdout: true, label: 'Reading log file')
+        currentBuild.result = 'FAILURE'
+        error (cmdLogs)
+    } else if(logs.contains("[DependencyCheck] Findings exceed configured thresholds")) {
+        def cmdLogs = "Build failed due to vulnerabilities found during Dependency-Check scan. Please check the HTML report in the workspace, and by clicking on the "Dependency-Check" button in the build page."
+        currentBuild.result = 'FAILURE'
+        error (cmdLogs)
+    } else if(logs.contains("[ERROR] Matched one or more prohibited patterns")){
+        def cmdLogs = "Credentials stored in the source code needs to be removed"
+        currentBuild.result = 'FAILURE'
+        error (cmdLogs)
+    } else if(logs.contains("received unexpected HTTP status: 504 Gateway Time-out")){
+        def cmdLogs = "received unexpected HTTP status: 504 Gateway Time-out at image push stage"
+        currentBuild.result = 'FAILURE'
+        error (cmdLogs)
+    }
+}
+
+def testSecurityThresholds(criticalCount, highCount, mediumCount, lowCount, errorMessage) {
+    if(criticalCount >= 1) {
+        error(errorMessage)
+    } else if(highCount >= 1) {
+        error(errorMessage)
+    } else if (mediumCount >= 10) {
+        error(errorMessage)
+    } else if(lowCount >= 20) {
+        error(errorMessage)
+    }
+}
+
+def publishToS3(reportDirname, s3Bucket) {
+    def squadName = "${JOB_NAME}".split('/')[0]
+    def jobName = "${JOB_BASE_NAME}"
+    def envName = "dev"
+    def TIMESTAMP = new Date().format("yyyyMMdd.HHmm")
+    def archiveName = "${jobName}-${BUILD_DISPLAY_NAME}-${reportDirname}-${TIMESTAMP}"
+    
+    if (fileExists(reportDirname)) {
+        sh label: 'Creating reports archive', script: """
+            touch ${reportDirname}/${archiveName}.tar.gz
+            tar --exclude=${archiveName}.tar.gz -czvf ${reportDirname}/${archiveName}.tar.gz -C ${reportDirname} .
+        """
+        sh label: 'Uploading to S3', script: """
+            aws s3 cp ${reportDirname}/${archiveName}.tar.gz s3://${s3Bucket}/${squadName}/${envName}/
+        """
+        archiveArtifacts "${reportDirname}/${archiveName}.tar.gz"
+    } else {
+        error("Reports directory does not exist. There was a problem with the reports generation.")
+    }
+}

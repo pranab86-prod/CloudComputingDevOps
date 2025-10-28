@@ -1,0 +1,32 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: student-backend
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: student-backend
+  template:
+    metadata:
+      labels:
+        app: student-backend
+    spec:
+      containers:
+      - name: backend
+        image: 590183999670.dkr.ecr.us-west-2.amazonaws.com/mysql
+        ports:
+        - containerPort: 3000
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: student-backend-service
+spec:
+  selector:
+    app: student-backend
+  ports:
+  - port: 80
+    targetPort: 3000
+  type: LoadBalancer
+

@@ -1,0 +1,126 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "VPC, Subnet, IGW, RouteTable, SecurityGroup, and Ubuntu EC2"
+
+Parameters:
+  KeyName:
+    Description: Name of an existing EC2 KeyPair to enable SSH access
+    Type: AWS::EC2::KeyPair::KeyName
+
+Resources:
+  # -------------------------
+  # VPC
+  # -------------------------
+  ProdVPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: Prod-VPC
+
+  # -------------------------
+  # Subnet
+  # -------------------------
+  ProdSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref ProdVPC
+      CidrBlock: 10.0.1.0/24
+      MapPublicIpOnLaunch: true
+      AvailabilityZone: !Select [ 0, !GetAZs "" ]
+      Tags:
+        - Key: Name
+          Value: Prod-Subnet
+
+  # -------------------------
+  # Internet Gateway
+  # -------------------------
+  ProdInternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: Prod-igw
+
+  AttachGateway:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref ProdVPC
+      InternetGatewayId: !Ref ProdInternetGateway
+
+  # -------------------------
+  # Route Table
+  # -------------------------
+  ProdRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref ProdVPC
+      Tags:
+        - Key: Name
+          Value: Prod-routetable
+
+  ProdRoute:
+    Type: AWS::EC2::Route
+    DependsOn: AttachGateway
+    Properties:
+      RouteTableId: !Ref ProdRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref ProdInternetGateway
+
+  SubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref ProdSubnet
+      RouteTableId: !Ref ProdRouteTable
+
+  # -------------------------
+  # Security Group
+  # -------------------------
+  ProdSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow SSH and HTTP
+      VpcId: !Ref ProdVPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          FromPort: 0
+          ToPort: 0
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: Prod-sg
+
+  # -------------------------
+  # EC2 Instance
+  # -------------------------
+  ProdEC2Instance:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: t3.medium
+      KeyName: !Ref KeyName
+      SubnetId: !Ref ProdSubnet
+      SecurityGroupIds:
+        - !Ref ProdSecurityGroup
+      ImageId: ami-03aa99ddf5498ceb9 # Ubuntu 22.04 LTS (update if needed in your region)
+      Tags:
+        - Key: Name
+          Value: Prod-ubuntu-ec2
+
+Outputs:
+  InstancePublicIP:
+    Description: Public IP of the Ubuntu EC2
+    Value: !GetAtt ProdEC2Instance.PublicIp
+  InstanceID:
+    Description: EC2 Instance ID
+    Value: !Ref ProdEC2Instance

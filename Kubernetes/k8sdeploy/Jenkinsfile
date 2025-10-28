@@ -1,0 +1,69 @@
+pipeline {
+    agent { label 'master' }
+    
+    environment {
+        AWS_REGION = "us-west-2"
+        ECR_REPO = "533267415802.dkr.ecr.us-west-2.amazonaws.com/myapp"
+        K8S_DEPLOYMENT = "myapp-deployment"
+        K8S_NAMESPACE = "default"
+    }
+
+    stages {
+        stage('Checkout Code') {
+            steps {
+                git branch: 'main', url: 'https://github.com/pk-1986/DevOpsCloud.git'
+            }
+        }
+
+        stage('Login to AWS ECR') {
+            steps {
+                withAWS(region: "${AWS_REGION}", credentials: 'awsid') {
+                    sh '''
+                    cd $WORKSPACE/Kubernetes/k8sdeploy ; ls -ltr
+                    aws ecr get-login-password --region $AWS_REGION | \
+                    docker login --username AWS --password-stdin $ECR_REPO
+                    '''
+                }
+            }
+        }
+
+        stage('Build Docker Image') {
+            steps {
+                sh '''
+                cd $WORKSPACE/Kubernetes/k8sdeploy ; ls -ltr
+                IMAGE_TAG=${BUILD_NUMBER}
+                docker build -t $ECR_REPO:$IMAGE_TAG .
+                '''
+            }
+        }
+
+        stage('Push to ECR') {
+            steps {
+                withAWS(region: "${AWS_REGION}", credentials: 'awsid') {
+                    sh '''
+                    cd $WORKSPACE/Kubernetes/k8sdeploy ; ls -ltr
+                    IMAGE_TAG=${BUILD_NUMBER}
+                    docker push $ECR_REPO:$IMAGE_TAG
+                    '''
+                }
+            }
+        }
+
+        stage('Deploy to EKS') {
+            steps {
+                withAWS(region: "${AWS_REGION}", credentials: 'awsid') {
+                    sh '''
+                    cd $WORKSPACE/Kubernetes/k8sdeploy ; ls -ltr
+                    IMAGE_TAG=${BUILD_NUMBER}
+                    aws eks update-kubeconfig --region $AWS_REGION --name prod-eks
+
+                    kubectl set image deployment/$K8S_DEPLOYMENT \
+                    myapp-container=$ECR_REPO:$IMAGE_TAG -n $K8S_NAMESPACE
+
+                    kubectl rollout status deployment/$K8S_DEPLOYMENT -n $K8S_NAMESPACE
+                    '''
+                }
+            }
+        }
+    }
+}

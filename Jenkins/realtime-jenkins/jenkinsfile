@@ -1,0 +1,272 @@
+pipeline {
+    agent { label 'linux' }
+    tools {
+        maven 'maven'
+        jdk 'jdk21'
+    }
+
+    environment {
+        GIT_REPO_URL = 'https://github.com/MSILDigital/msil-icp-services.git'
+        DOCKER_IMAGE_NAME = 'icp-bookingservice'
+        KUBE_NAMESPACE = 'default'
+        KUBE_CONFIG = 'kubeconfig'
+        AWS_ACCESS_KEY_ID = credentials('aws-access-key-id')
+        AWS_SECRET_ACCESS_KEY = credentials('aws-secret-access-key')
+        AWS_REGION = 'ap-south-1'
+        ECR_ACCOUNT_ID = credentials('aws-account-id')
+        ECR_REPOSITORY_URI = "${ECR_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/icp-dev-generic-ecr"
+        gitleak_config_file = "a593e18a-62cc-4f00-8a9b-857f5"
+    }
+
+    options {
+        timeout(time: 2, unit: 'HOURS')
+    }
+    
+    stages {
+        stage('Clean Workspace') {
+            steps {
+                cleanWs()
+            }
+        }
+        
+        stage('Git Checkout') {
+            steps {
+                script {
+                    checkout([
+                        $class: 'GitSCM',
+                        branches: [[name: '*/develop']],
+                        userRemoteConfigs: [[url: "${GIT_REPO_URL}", credentialsId: 'jenkins-id']]
+                    ])
+                }
+            }
+        }
+        stage('Set Maven Wrapper Permissions') {
+            steps {
+                sh 'chmod +x ./mvnw'
+            }
+        }
+        stage('GitLeaks Checks') {
+        steps {
+        script {
+            echo "Currently in stage: ${env.STAGE_NAME}"
+            try {
+                // Provide the configfile id which contain whitelist file/folder code.
+                configFileProvider([configFile(fileId: "${env.gitleak_config_file}", targetLocation: '.gitleaks.toml')]) {
+                    sh 'sudo docker run --user=0 --rm -v $PWD:/src ghcr.io/zricethezav/gitleaks:latest detect --source="/src/" -r /src/gitleaks.json --no-git -v 2>/dev/null'
+               
+                // Publish Report
+                publishHTML([allowMissing: false, alwaysLinkToLastBuild: true, keepAll: true, reportDir: '.', reportFiles: 'gitleaks.json', reportName: 'gitleaks_Report', reportTitles: 'GitLeaks Report', useWrapperFileDirectly: 'true'])
+                } 
+			 }
+			 catch (Exception e) {
+                def currentStage = env.STAGE_NAME
+                publishHTML([allowMissing: false, alwaysLinkToLastBuild: true, keepAll: true, reportDir: '.', reportFiles: 'gitleaks.json', , reportName: 'gitleaks_Report', reportTitles: 'GitLeaks Report', useWrapperFileDirectly: 'true'])
+                sh 'sudo rm -f gitleaks.json'
+                unstable(message: 'Forcing Unstable')
+                // If you don't want to stop the build then uncomment this below line.
+                error "Pipeline failed at ${env.STAGE_NAME} due to some critical error."
+                
+                }
+              }
+            }
+        }
+        /*
+        stage('snyk open source scan') {
+           steps {
+              script {
+                 echo 'Open source scanning...'
+                 snykSecurity(
+                    snykInstallation: 'snyk@latest',
+                    snykTokenId: 'snyk-token',
+                    failOnIssues: false,
+                    organisation: 'icp',
+                    projectName: 'MSILDigital/msil-icp-services-customer-booking',
+                    severity: 'high',
+                    // additionalArguments: "--json --json-file-output=opensource_snykreport.json"
+                    )
+                }
+	        }
+        }
+        */
+        stage('Open source scan')
+				        {
+							steps{
+							    script{
+									echo '=============== SNYK OPEN SOURCE SCAN ==============='
+								
+										// install dependencies
+										 sh 'npm install -g snyk'
+                                         sh 'npm install -g snyk-delta'
+                                         sh 'npm install snyk-to-html -g'
+                                         
+										 // Authorize and authentication with snyk platform.
+                                         withCredentials([string(credentialsId: 'snyk_token_icp', variable: 'SNYK_TOKEN_VAR')]) {
+                                            sh 'snyk auth ${SNYK_TOKEN_VAR}'
+                                            // sh 'snyk auth f99bc7f0-6079-4e39-8dc2-702e8774dfb3'
+                                            echo "testing for delta"
+											
+											// Run the snyk test for open source scan. Print its output in json file vuln.json and pipe the same ahead to snyk delta command.
+											// Run snyk delta to check for new vulnerabilities in the latest scan wrt the last snapshot.
+                                            def result = sh(script: 'snyk test --json --print-deps --json-file-output=vuln.json | snyk-delta --setPassIfNoBaseline true --baselineOrg icp --baselineProject c30d697a-5a4e-431e-b279-e8dbf64ba71d', returnStatus: true)
+                                            
+                                            echo "testing for delta completed. "
+											// convert the json report to html
+                                            sh "snyk-to-html -i vuln.json -o results-opensource.html"
+                                            
+											// publish the html report
+                                            publishHTML([allowMissing: false, alwaysLinkToLastBuild: true, keepAll: true, reportDir: '.', reportFiles: 'results-opensource.html', reportName: 'Snyk Security Report OSS', reportTitles: 'Snyk Security Report OSS', useWrapperFileDirectly: true])
+                                            
+											// check if the delta result is 0 or not. If not, then new vulnerabilities are found else take the new snapshot using snyk monitor.
+											if (result != 0) {
+                                                echo "result !=0"
+                                                // error "Snyk found new vulnerabilities! Failing the build."
+                                                echo "Snyk found new vulnerabilities! Failing the build."
+                                            }
+                                            else{
+                                                echo "Snyk found no new Vulnerabilities. Creating a snapshot."
+                                            sh "snyk monitor --org=icp --project-name=msil-icp-services-customer-booking"
+                                            }
+                                            
+                                            
+                                       }
+							    }
+								
+							}
+						}
+
+        stage('Snyk Code Scan') {
+            steps {
+                script {
+                    echo 'Code Scanning...'
+                    snykSecurity(
+                        snykInstallation: 'snyk@latest',
+                        snykTokenId: 'snyk-token',
+                        failOnIssues: false,
+                        monitorProjectOnBuild: false,
+                        additionalArguments: '--code',
+                        organisation: 'icp',
+                        projectName: 'MSILDigital/msil-icp-services-customer-booking',
+                        severity: 'high'
+                    )
+                }
+            }
+        }
+        
+        stage('Maven Build') {             
+         steps {                 
+          echo "Source code build"
+          sh 'chmod +x ./mvnw'
+          sh 'mvn clean install'
+          }         
+        }
+        
+        stage('Code Analysis with SonarQube') {
+            environment {
+                scannerHome = tool 'sonarqube'
+            }
+            steps {
+                withSonarQubeEnv('sonarqube') {
+                    sh '''${scannerHome}/bin/sonar-scanner \
+                        -Dsonar.projectKey=icp-services-customer-booking \
+                        -Dsonar.projectName=icp-services-customer-booking \
+                        -Dsonar.sources=src/ \
+                        -Dsonar.java.binaries=target/classes \
+                        -Dsonar.junit.reportsPath=target/surefire-reports/ \
+                        -Dsonar.jacoco.reportsPath=target/jacoco.exec
+                    '''
+                }
+            }
+        }
+
+        stage('Docker Build') {
+            steps {
+                script {
+                    echo 'Building Docker image...'
+                    sh "docker build -t ${DOCKER_IMAGE_NAME}:${env.BUILD_NUMBER} ."
+                }
+            }
+        }
+
+        stage('Synk Container Security new'){
+							steps{
+							    script{
+									echo '=============== SNYK CONTAINER SCAN ==============='
+										
+										
+										def dockerImage="${DOCKER_IMAGE_NAME}:${env.BUILD_NUMBER}"
+										
+										//install dependencies
+										 sh 'npm install -g snyk'
+                                         sh 'npm install -g snyk-delta'
+                                         sh 'npm install snyk-to-html -g'
+                                         
+										 // Authenticate and Authorize with SNYK Platform.
+                                         withCredentials([string(credentialsId: 'snyk_token_icp', variable: 'SNYK_TOKEN_VAR')]) {
+                                            sh 'snyk auth ${SNYK_TOKEN_VAR}'
+                                            echo "testing for delta"
+                                            
+											// Run the snyk container test for container scan. Print its output in json file vuln-container.json and pipe the same ahead to snyk delta command.
+											// Run snyk delta to check for new vulnerabilities in the latest scan wrt the last snapshot.
+											
+                                            def result = sh(script: "snyk container test  --exclude-app-vulns --json --print-deps --json-file-output=vuln-container.json ${dockerImage} --file=Dockerfile | snyk-delta --setPassIfNoBaseline true --baselineOrg icp --baselineProject c30d697a-5a4e-431e-b279-e8dbf64ba71d", returnStatus: true)
+                                            
+                                            echo "testing for delta completed. "
+											
+											// convert the json report to html
+                                            sh "snyk-to-html -i vuln-container.json -o results-container.html"
+                                            
+											// publish the html report
+                                            publishHTML([allowMissing: false, alwaysLinkToLastBuild: true, keepAll: true, reportDir: '.', reportFiles: 'results-container.html', reportName: 'Snyk Security Report-Container', reportTitles: 'Snyk Security Report-Container', useWrapperFileDirectly: true])
+											
+											// check if the delta result is 0 or not. If not, then new vulnerabilities are found else take the new snapshot using snyk monitor.
+                                            if (result != 0) {
+                                                echo "result !=0"
+                                                echo "Snyk found new vulnerabilities! Failing the build."
+                                                // error "Snyk found new vulnerabilities! Failing the build."
+                                            }
+                                            else{
+                                                echo "Snyk found no new Vulnerabilities. Creating a snapshot."
+                                            sh "snyk container monitor --org=icp --project-name=${dockerImage} ${dockerImage}"
+                                            }
+                                            
+                                            
+                                        }
+							    }
+								
+							}
+						}
+                    
+        stage('Push to ECR') {
+          steps {
+          script {
+            echo "Logging in to Amazon ECR..."
+            def loginCommand = "aws ecr get-login-password --region ${AWS_REGION}"
+            def loginResponse = sh(script: loginCommand, returnStdout: true).trim()
+            sh "echo ${loginResponse} | docker login --username AWS --password-stdin ${ECR_REPOSITORY_URI}"
+            sh """
+                docker tag ${DOCKER_IMAGE_NAME}:${env.BUILD_NUMBER} ${ECR_REPOSITORY_URI}:${DOCKER_IMAGE_NAME}_${env.BUILD_NUMBER}
+                docker push ${ECR_REPOSITORY_URI}:${DOCKER_IMAGE_NAME}_${env.BUILD_NUMBER}
+            """
+            }
+         }
+        }
+
+        stage('Deploy to Kubernetes') {
+            steps {
+                script {
+                    withCredentials([file(credentialsId: KUBE_CONFIG, variable: 'KUBECONFIG')]) {
+                        echo 'Deploying to Kubernetes...'
+                        def imageName = "${ECR_REPOSITORY_URI}:${env.BUILD_NUMBER}"
+                        sh "cat kube/DEV/deploy.yaml"
+                        sh """
+                        sed -i "s/tagversion/${env.BUILD_NUMBER}/g" kube/DEV/deploy.yaml
+                        kubectl version
+                        kubectl get pod,deployment,svc
+                        kubectl apply -f kube/DEV/deploy.yaml
+                        """
+                    }
+                }
+            }
+        }
+    }
+}
