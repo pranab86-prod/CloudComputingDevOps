@@ -7,6 +7,14 @@ pipeline {
     }
 
     stages {
+
+        stage('Clean Workspace') {
+            steps {
+                echo "Cleaning Jenkins workspace before build..."
+                deleteDir()   // <-- Deletes everything in the workspace
+            }
+        }
+
         stage('Terraform Apply') {
             steps {
                 withEnv([
