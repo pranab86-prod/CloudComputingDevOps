@@ -61,6 +61,7 @@ sudo systemctl status tomcat
 
 # from your laptop
 #scp -i /path/to/your-key.pem sample-tomcat-app.war ubuntu@<EC2_PUBLIC_IP>:/tmp/
+curl -O https://raw.githubusercontent.com/pranab86-prod/CloudComputingDevOps/main/Tomcat/sample-tomcat-app.war
 
 # on the EC2 instance
 sudo mv /tmp/sample-tomcat-app.war /opt/tomcat/latest/webapps/
