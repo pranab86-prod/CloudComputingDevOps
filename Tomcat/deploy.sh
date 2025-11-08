@@ -61,27 +61,39 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now tomcat
 sudo systemctl status tomcat --no-pager
 
+###############=============================##########################3
 echo "===== Deploying sample app ====="
-# WAR deployment
-sudo curl -L -o /tmp/sample-tomcat-app.war https://raw.githubusercontent.com/pranab86-prod/CloudComputingDevOps/main/Tomcat/sample-tomcat-app.war
-sudo mv /tmp/sample-tomcat-app.war /opt/tomcat/latest/webapps/
+
+# Download WAR into /tmp where ubuntu user has permission
+cd /tmp
+
+# Download WAR safely
+curl -L -o sample-tomcat-app.war https://raw.githubusercontent.com/pranab86-prod/CloudComputingDevOps/main/Tomcat/sample-tomcat-app.war
+
+# Move and set ownership
+sudo mv sample-tomcat-app.war /opt/tomcat/latest/webapps/
 sudo chown tomcat:tomcat /opt/tomcat/latest/webapps/sample-tomcat-app.war
 
-# index.html deployment
+# Download index.html into Tomcat ROOT
 sudo mkdir -p /opt/tomcat/latest/webapps/ROOT
 sudo curl -L -o /opt/tomcat/latest/webapps/ROOT/index.html https://raw.githubusercontent.com/pranab86-prod/CloudComputingDevOps/main/Tomcat/index.html
-sudo chown tomcat:tomcat /opt/tomcat/latest/webapps/ROOT/index.html
-# WEB-INF/web.xml deployment
+
+# Download web.xml inside WEB-INF
 sudo mkdir -p /opt/tomcat/latest/webapps/ROOT/WEB-INF
 sudo curl -L -o /opt/tomcat/latest/webapps/ROOT/WEB-INF/web.xml https://raw.githubusercontent.com/pranab86-prod/CloudComputingDevOps/main/Tomcat/web.xml
-sudo chown tomcat:tomcat /opt/tomcat/latest/webapps/ROOT/WEB-INF/web.xml
-echo "===== Restarting Tomcat ====="
+
+# Set ownership for all webapps
+sudo chown -R tomcat:tomcat /opt/tomcat/latest/webapps/
+
+# Restart Tomcat to deploy
 sudo systemctl restart tomcat
 sleep 10
 
-echo "===== Checking if Tomcat is running ====="
+# Verify
 if systemctl is-active --quiet tomcat; then
-    echo "✅ Tomcat is running and WAR deployed successfully!"
+    echo "✅ Tomcat running and WAR deployed successfully!"
 else
-    echo "❌ Tomcat failed to start. Check logs at: /opt/tomcat/latest/logs/catalina.out"
+    echo "❌ Tomcat failed to start. Check logs at /opt/tomcat/latest/logs/catalina.out"
 fi
+
+
