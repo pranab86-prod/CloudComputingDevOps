@@ -3,14 +3,11 @@
 # MASTER DEPLOYMENT SCRIPT — Install & Deploy Tomcat App on All EC2s
 # ==========================================================
 
-#AWS_ACCESS_KEY="<YOUR_AWS_ACCESS_KEY>"
-#AWS_SECRET_KEY="<YOUR_AWS_SECRET_KEY>"
-AWS_REGION="us-west-2"
-PEM_KEY="id_rsa"
-
-export AWS_ACCESS_KEY_ID=$AWS_ACCESS_KEY
-export AWS_SECRET_ACCESS_KEY=$AWS_SECRET_KEY
-export AWS_DEFAULT_REGION=$AWS_REGION
+cd $WORKSPACE/Tomcat
+ls -ltr
+export AWS_DEFAULT_REGION="us-west-2"
+export AWS_ACCESS_KEY_ID=$AWS_ACCESS_KEY_ID
+export AWS_SECRET_ACCESS_KEY=$AWS_SECRET_ACCESS_KEY
 
 # ----------------------------------------------------------
 # STEP 1: Fetch Running EC2 Public IPs
