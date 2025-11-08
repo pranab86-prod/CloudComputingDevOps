@@ -69,5 +69,10 @@ curl -O https://raw.githubusercontent.com/pranab86-prod/CloudComputingDevOps/mai
 sudo mv /tmp/sample-tomcat-app.war /opt/tomcat/latest/webapps/
 sudo chown tomcat:tomcat /opt/tomcat/latest/webapps/sample-tomcat-app.war
 
+cd $WORKSPACE/Tomcat
+ls -ltr
+
+
+
 # Tomcat will automatically explode and deploy the WAR. Check logs if not:
 #tail -n 200 /opt/tomcat/latest/logs/catalina.out
