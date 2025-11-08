@@ -63,18 +63,18 @@ sudo systemctl status tomcat --no-pager
 
 echo "===== Deploying sample app ====="
 # WAR deployment
-curl -L -o /tmp/sample-tomcat-app.war https://raw.githubusercontent.com/pranab86-prod/CloudComputingDevOps/main/Tomcat/sample-tomcat-app.war
+sudo curl -L -o /tmp/sample-tomcat-app.war https://raw.githubusercontent.com/pranab86-prod/CloudComputingDevOps/main/Tomcat/sample-tomcat-app.war
 sudo mv /tmp/sample-tomcat-app.war /opt/tomcat/latest/webapps/
 sudo chown tomcat:tomcat /opt/tomcat/latest/webapps/sample-tomcat-app.war
 
 # index.html deployment
 sudo mkdir -p /opt/tomcat/latest/webapps/ROOT
 sudo curl -L -o /opt/tomcat/latest/webapps/ROOT/index.html https://raw.githubusercontent.com/pranab86-prod/CloudComputingDevOps/main/Tomcat/index.html
-
+sudo chown tomcat:tomcat /opt/tomcat/latest/webapps/ROOT/index.html
 # WEB-INF/web.xml deployment
 sudo mkdir -p /opt/tomcat/latest/webapps/ROOT/WEB-INF
 sudo curl -L -o /opt/tomcat/latest/webapps/ROOT/WEB-INF/web.xml https://raw.githubusercontent.com/pranab86-prod/CloudComputingDevOps/main/Tomcat/web.xml
-
+sudo chown tomcat:tomcat /opt/tomcat/latest/webapps/ROOT/WEB-INF/web.xml
 echo "===== Restarting Tomcat ====="
 sudo systemctl restart tomcat
 sleep 10
