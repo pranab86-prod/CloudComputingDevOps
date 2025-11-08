@@ -59,18 +59,24 @@ sudo systemctl enable --now tomcat
 sudo systemctl status tomcat
 
 
+sudo mkdir -p sample-tomcat-app/WEB-INF/
+cd sample-tomcat-app/ 
 # from your laptop
 #scp -i /path/to/your-key.pem sample-tomcat-app.war ubuntu@<EC2_PUBLIC_IP>:/tmp/
 curl -O https://raw.githubusercontent.com/pranab86-prod/CloudComputingDevOps/main/Tomcat/sample-tomcat-app.war
-
+sudo mv sample-tomcat-app.war /opt/tomcat/latest/webapps/
+sudo chown tomcat:tomcat /opt/tomcat/latest/webapps/sample-tomcat-app.war
+curl -O https://raw.githubusercontent.com/pranab86-prod/CloudComputingDevOps/main/Tomcat/index.html
+cd WEB-INF/
+curl -O https://raw.githubusercontent.com/pranab86-prod/CloudComputingDevOps/main/Tomcat/web.xml
 #ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i id_rsa ubuntu@35.166.234.15
 
 # on the EC2 instance
-sudo mv /tmp/sample-tomcat-app.war /opt/tomcat/latest/webapps/
-sudo chown tomcat:tomcat /opt/tomcat/latest/webapps/sample-tomcat-app.war
+#sudo mv /tmp/sample-tomcat-app.war /opt/tomcat/latest/webapps/
+#sudo chown tomcat:tomcat /opt/tomcat/latest/webapps/sample-tomcat-app.war
 
-cd $WORKSPACE/Tomcat
-ls -ltr
+#cd $WORKSPACE/Tomcat
+#ls -ltr
 
 
 
