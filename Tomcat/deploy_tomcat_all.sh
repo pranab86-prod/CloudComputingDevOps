@@ -21,7 +21,7 @@ aws ec2 describe-instances \
 
 echo "Found the following instances:"
 cat ec2.txt
-
+sudo chmod 600 $PEM_KEY
 # ----------------------------------------------------------
 # STEP 2: Loop through each instance and deploy
 # ----------------------------------------------------------
