@@ -63,6 +63,8 @@ sudo systemctl status tomcat
 #scp -i /path/to/your-key.pem sample-tomcat-app.war ubuntu@<EC2_PUBLIC_IP>:/tmp/
 curl -O https://raw.githubusercontent.com/pranab86-prod/CloudComputingDevOps/main/Tomcat/sample-tomcat-app.war
 
+#ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i id_rsa ubuntu@35.166.234.15
+
 # on the EC2 instance
 sudo mv /tmp/sample-tomcat-app.war /opt/tomcat/latest/webapps/
 sudo chown tomcat:tomcat /opt/tomcat/latest/webapps/sample-tomcat-app.war
