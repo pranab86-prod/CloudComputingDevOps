@@ -11,3 +11,36 @@ sudo make install
 
 
 ttyd --writable -p 7681 bash
+
+PuTTY-User-Key-File-2: ssh-rsa
+Encryption: none
+Comment: c1st-ops-automation-instance-ppk
+Public-Lines: 6
+AAAAB3NzaC1yc2EAAAADAQABAAABAQC7VGLDdzraMiWmSk2HkoUoqO+r/ey5BwMy
+ynd85Cg1T7gJFOIevcDW0qO83qZCyUwawQHZRCIxtlNV8gff6A8ooklZkeNukPys
+CT6/ZzxcPN5Tu7NSs4aL1QW5eU3mM3CyWwU/ptx3l+D0e/Az4qhNPmAzvX89vVOJ
+spk6nQsC26sZnVgCueVVpDA5noA2jf8SNeFXgc1DZeGP7b23kvigZUaa7inD6gn5
+hAclNkuBpSOfTKOc1sXERNPTB+wj4og/tL/wHls0eUy6RA9TzlXwR9/0E/4za148
+aKNcJqMjUIbdUptM/6gqhC0HZoXHL0ijFgOdxERloAQpctLhysvb
+Private-Lines: 14
+AAABADR0/PMfgCt5v3FBfVRpg0BPjk3rXU6y2AJxD+S5P0kueaqRXoCdQlLlyVQq
+RQSOufED+zCME8c39z4p+GqK4TPPvhqG79kWYKsMK7YNgqmRofBwr1aJTzP5AxFd
+FqNP5E8Njfq1DyeuMCBGVI0y+04mGWpjti3jxnDYwm/Xai3yOrhIT2fAbcoihsw7
+yzXn2CF1BeTcc+dpyNDpyZ/2THUrztXodFVWX7awGjfZM1Gp+AP4mUJaZnZpo7bg
+STeygElu8Iq+kuN0vKh5C9kOkIGSsuQsWzlfB9GFehbl9KQGimtdcvb8ROy8q580
+Xg0xL46HH9j7c3iRD5I+Dq87iAEAAACBAOaOu3M28R2RvvVG+i5SXa6/2xvVkrMW
+fHfv7Sjpp6wV68NDgZeU8WAjZf4Xo/Wd7FZE2wXO4CGMMfhtbUmEJCzDv/3OjFGI
+ovrfjPg5XJjKpm7VSAZao/QNXf3pwGDrxoYU3IabHC0TCu6kxFJQGCFkC7fgwwZU
+VJpjEB0VUf6bAAAAgQDQAHY1XfoHOi6lpn9juRH8t/I3MnH+OP8PFV1IHScqAm+j
+ArupM/STVcj8qqZ9d0n25UKP0F4UP+JIh7JKzHEFnMakT8iHhcnRyBxb0Reo1a7+
+hwmTxwD7QAq1Huznr3W24VlQAHZlw07xqkctatNZPrlM2k72XgJQ9GVgIZabwQAA
+AIAbUI7PdThsc9l/rwOATdc7QRK+sj8xv9NIe0/NH6gA69tIprK6Phq8AVlk5v93
+67FR7BfvRW80tpPtlHkixJARyndqyfBTBq2yq9MRwdxOM6gPe0BQYZ9OJvwrrwSt
+j26Tei6Q0Nu0dl90C42LCgyQFYkWRHDRzjAARXWTk/nd4g==
+Private-MAC: d415e5e36f032d46c88f2c1b29462787cffb21fc
+
+sfdx: 3.69.90.140
+
+idl: 63.177.195.157
+
+idl1: 63.177.164.21
